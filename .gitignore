@@ -48,3 +48,6 @@ notebooks
 
 # Data
 data
+
+# Android build output
+/android/build/

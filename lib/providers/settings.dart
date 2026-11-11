@@ -1,75 +1,74 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-class SettingsProvider extends ChangeNotifier{
-  String _entryType = "expense";
-  String _aggregateType = "day";
-  DateTime _startDate = DateTime(DateTime.now().year, DateTime.now().month, 1);
-  DateTime _endDate = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day, 23, 59, 59);
-  int _nExpenses = 50;
-  String _keyFilter = '';
-  int _boldIndex = -1;
-  String _currency = "EUR";
-  String _expenseCategory = "all";
-  String _expenseLabel = "";
+/// User preferences, saved with shared_preferences.
+class SettingsProvider extends ChangeNotifier {
+  static const _kBudget = 'monthlyBudget';
+  static const _kAlert = 'alertAt80';
+  static const _kWeekStart = 'weekStartsOn';
+  static const _kTheme = 'themeMode';
+  static const _kLastExport = 'lastCsvExport';
 
-  String get entryType => _entryType;
-  String get aggregateType => _aggregateType;
-  DateTime get startDate => _startDate;
-  DateTime get endDate => _endDate;
-  int get nExpenses => _nExpenses;
-  String get keyFilter => _keyFilter;
-  int get boldIndex => _boldIndex;
-  String get currency => _currency;
-  String get expenseCategory => _expenseCategory;
-  String get expenseLabel => _expenseLabel;
+  SharedPreferences? _prefs;
 
-  set entryType(String newEntryType) {
-    _entryType = newEntryType;
+  double _monthlyBudget = 1800;
+  bool _alertAt80 = true;
+  int _weekStartsOn = DateTime.monday;
+  ThemeMode _themeMode = ThemeMode.system;
+  DateTime? _lastCsvExport;
+
+  double get monthlyBudget => _monthlyBudget;
+  bool get alertAt80 => _alertAt80;
+  int get weekStartsOn => _weekStartsOn;
+  ThemeMode get themeMode => _themeMode;
+  DateTime? get lastCsvExport => _lastCsvExport;
+
+  Future<void> load() async {
+    try {
+      final p = _prefs = await SharedPreferences.getInstance();
+      _monthlyBudget = p.getDouble(_kBudget) ?? _monthlyBudget;
+      _alertAt80 = p.getBool(_kAlert) ?? _alertAt80;
+      _weekStartsOn = p.getInt(_kWeekStart) ?? _weekStartsOn;
+      _themeMode = ThemeMode.values[p.getInt(_kTheme) ?? ThemeMode.system.index];
+      final last = p.getInt(_kLastExport);
+      _lastCsvExport = last == null ? null : DateTime.fromMillisecondsSinceEpoch(last);
+    } catch (e) {
+      debugPrint('Could not load settings: $e');
+    }
     notifyListeners();
   }
 
-  set aggregateType(String newAggregateType) {
-    _aggregateType = newAggregateType;
+  set monthlyBudget(double v) {
+    _monthlyBudget = v;
+    _prefs?.setDouble(_kBudget, v);
     notifyListeners();
   }
 
-  set startDate(DateTime newStartDate) {
-    _startDate = newStartDate;
+  set alertAt80(bool v) {
+    _alertAt80 = v;
+    _prefs?.setBool(_kAlert, v);
     notifyListeners();
   }
 
-  set endDate(DateTime newEndDate) {
-    _endDate = newEndDate;
+  set weekStartsOn(int v) {
+    _weekStartsOn = v;
+    _prefs?.setInt(_kWeekStart, v);
     notifyListeners();
   }
 
-  set nExpenses (int newNExpenses) {
-    _nExpenses = newNExpenses;
+  set themeMode(ThemeMode v) {
+    _themeMode = v;
+    _prefs?.setInt(_kTheme, v.index);
     notifyListeners();
   }
 
-  set keyFilter (String newKeyFilter) {
-    _keyFilter = newKeyFilter;
-    notifyListeners();
-  }
-
-  set boldIndex (int newBoldIndex) {
-    _boldIndex = newBoldIndex;
-    notifyListeners();
-  }
-
-  set currency (String newCurrency) {
-    _currency = newCurrency;
-    notifyListeners();
-  }
-
-  set expenseCategory (String newExpenseCategory) {
-    _expenseCategory = newExpenseCategory;
-    notifyListeners();
-  }
-
-  set expenseLabel (String newExpenseLabel) {
-    _expenseLabel = newExpenseLabel;
+  set lastCsvExport(DateTime? v) {
+    _lastCsvExport = v;
+    if (v == null) {
+      _prefs?.remove(_kLastExport);
+    } else {
+      _prefs?.setInt(_kLastExport, v.millisecondsSinceEpoch);
+    }
     notifyListeners();
   }
 }
