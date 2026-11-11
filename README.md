@@ -2,7 +2,7 @@
 
 [![GitHub](https://img.shields.io/badge/github-%23121011.svg?style=for-the-badge&logo=github&logoColor=white)](https://github.com/HeatherShein/expense-charts)
 
-A modern Flutter app for tracking personal expenses and income with beautiful visualizations and Google Drive synchronization.
+A Flutter app for tracking personal expenses and income against a monthly budget. Everything stays on the device (SQLite), with CSV and database import / export.
 
 ## Table of Contents
 
@@ -10,63 +10,56 @@ A modern Flutter app for tracking personal expenses and income with beautiful vi
 2. [Architecture](#architecture)
 3. [Installation](#installation)
 4. [Usage](#usage)
-5. [Google Drive Sync](#google-drive-sync)
+5. [CSV](#csv)
 6. [Development](#development)
 
 ## Features
 
-### Core Functionality
-- **Manual Entry**: Add expenses and income with categories, labels, and amounts
-- **Period Tracking**: Track expenses over multiple days (e.g., hotel stays)
-- **Budget Management**: Set and track remaining budget with automatic updates
-- **Data Visualization**: Interactive charts and graphs for expense analysis
+### Screens
+- **Overview**: money left to spend this month, progress against an "even pace" marker, daily allowance, income vs expenses, a donut of the top 4 categories, and the 4 latest entries.
+- **Analytics**: one bar chart with a Daily / Weekly / Monthly / Yearly switch, a dashed average line, tap a bar to see its value, average / highest / lowest tiles, and totals per category.
+- **Activity**: search, category chips, month totals, and entries grouped by day. Multi-day entries show a *Period* tag and the cost per day (or night for trips).
+- **Add entry** (the + button): expense or income, amount in any of your currencies, category grid, one day or a period.
+- **Budget & data**: monthly budget, 80% alert, CSV / database import and export, backup, currencies, week start, appearance (light / dark / system).
 
-### Pages
-- **Bar Chart**: Daily, Weekly, Monthly, and Yearly expense aggregations
-- **Pie Chart**: Category breakdown with budget tracking
-- **Details**: List view with filtering and search capabilities
+### Currencies
+Pick the preferred currency and manage the others with their rates in *Budget & data → Currency*. An entry typed in another currency is converted with the stored rate; the typed amount is kept so editing shows it. Changing the preferred currency re-bases the rates and can convert the stored amounts.
 
-### Data Management
-- **Local Storage**: SQLite database for offline access
-- **Import/Export**: CSV and database file support with proper formatting
-- **Data Backup**: Export functionality for data preservation
-- **CSV Format**: Exports data in the same format as your Python processing script
+### Periods
+An entry covering several days counts `amount / days` on each day in every chart and total.
 
 ### Categories
-- Alcohol, Exceptional, Grocery, Health, Leisure, Regular, Restaurant, Trip
+Grocery, Restaurant, Regular, Trip, Leisure, Health, Alcohol, Exceptional. Each has a fixed color and icon used on every screen. *Manage categories* is read-only for now.
 
 ## Architecture
 
-### State Management
-- **Provider Pattern**: Centralized state management with `SettingsProvider` and `BudgetProvider`
-- **Repository Pattern**: `ExpenseRepository` for data access abstraction
-- **Reactive UI**: Automatic updates when data changes
-
-### Code Organization
 ```
 lib/
-├── components/          # Reusable UI components
-├── constants/           # App constants and enums
-├── models/             # Data models
-├── pages/              # Screen implementations
-├── providers/          # State management
-├── repositories/       # Data access layer
-├── services/           # External services (Google Drive)
-└── utils/              # Utility functions
+├── constants/   # Categories: names, colors, icons, CSV names
+├── models/      # Expense, Currency
+├── pages/       # Overview, Analytics, Activity, Budget, Currencies, entry sheet
+├── providers/   # ExpenseStore (entries in memory), CurrencyProvider, SettingsProvider
+├── services/    # CSV codec, import / export / backup flows
+├── theme/       # Design tokens (colors, sizes, fonts) and ThemeData
+├── utils/       # Analytics calculations, dates, formatting, DatabaseHelper
+└── widgets/     # Cards, pill switch, entry row, bottom bar, text prompt dialog
+scripts/
+└── data_process.py  # Processes the exported CSV
 ```
 
-### Key Components
-- **DateRangePicker**: Reusable date selection widget
-- **EntryTypeDropdown**: Expense/Income selection
-- **CategoryDropdown**: Category selection with display names
-- **SyncDialog**: Google Drive synchronization interface
+- Entries are loaded once into `ExpenseStore`; every screen computes its view with the pure functions in `utils/analytics.dart`.
+- Settings are saved with `shared_preferences`; currencies live in the SQLite `currencies` table (database version 3, upgraded automatically from v1 / v2).
+- Fonts: Inter and Space Grotesk are bundled in `assets/fonts` (SIL Open Font License). Icons: `lucide_icons_flutter`.
 
 ## Installation
 
 ### Prerequisites
-- Flutter SDK (>=3.1.5)
-- Android Studio or VS Code
-- Android device or emulator
+- Flutter SDK 3.35 or newer (tested with 3.47.9)
+- JDK 17
+- Android SDK with platform 36 (`ANDROID_HOME` set)
+- An Android phone with USB debugging enabled, or an emulator
+
+The Android build uses Gradle 8.14.3, Android Gradle Plugin 8.11.1 and Kotlin 2.2.20, the minimums required by Flutter 3.47.
 
 ### Setup
 1. Clone the repository
@@ -74,7 +67,12 @@ lib/
    ```bash
    flutter pub get
    ```
-3. Run the app:
+3. Check the toolchain and that the phone is listed:
+   ```bash
+   flutter doctor
+   flutter devices
+   ```
+4. Run the app:
    ```bash
    flutter run
    ```
@@ -86,71 +84,47 @@ flutter build apk --release
 
 ## Usage
 
-### Adding Expenses
-1. Tap the "+" button on the main screen
-2. Fill in the expense details:
-   - Type (Expense/Income)
-   - Category
-   - Label (description)
-   - Amount
-   - Date range (for multi-day expenses)
-3. Tap "Insert expense"
+### Adding and editing entries
+- Tap **+**, enter the amount (tap the currency symbol to change currency), a label, a category, and the day or period. Tap **Save expense**.
+- Tap an entry in Overview or Activity to edit or delete it. Long-press an entry in Activity to delete it.
 
-### Viewing Data
-- **Bar Chart**: Switch between daily/weekly/monthly/yearly views
-- **Pie Chart**: See category breakdowns and remaining budget
-- **Details**: Browse all entries with filtering options
+### Budget
+- Set the monthly budget with **Edit budget** (Overview) or **Change** (Budget & data).
+- With the 80% alert on, the app warns you when a new expense takes the month past 80% of the budget.
 
-### Budget Management
-- Set initial budget in the Pie Chart page
-- Budget automatically updates when adding/editing/deleting expenses
-- Visual indicator when budget is not set
+### Data
+- **Import CSV**: adds the rows that are not already in the database.
+- **Import database**: merge a `.db` file into the current data, or replace it (asks for confirmation).
+- **Export CSV**: this month, this year, everything, or a custom range.
+- **Back up database**: saves a full copy of the SQLite file.
 
-## CSV Export
+## CSV
 
-### Exporting Data
-1. Tap the settings menu (three dots)
-2. Select "Export CSV"
-3. Choose your date range
-4. Select a destination folder
-5. The file will be saved as "expenses.csv"
-
-### Data Format
-The exported CSV matches your Python processing script format:
-- **Categories**: Translated to French (Alcool, Course, etc.)
-- **Dates**: MM/DD/YYYY format
-- **Types**: Expense = -1, Income = 1
+Export and import use the same format as `scripts/data_process.py`, so an exported file can be imported again. Import also accepts the older raw-column format.
 - **Columns**: Date, Intitulé, Montant, Type, Revenu/Dépense
+- **Dates**: MM/DD/YYYY
+- **Type**: French category name (Alcool, Course, …); empty for income
+- **Revenu/Dépense**: -1 for an expense, 1 for income
+- Period entries are exported with their start date only.
 
 ## Development
 
 ### Dependencies
-- **Flutter**: UI framework
-- **SQFlite**: Local database
-- **Provider**: State management
-- **FL Chart**: Data visualization
-- **File Picker**: File selection for import/export
-- **Velocity X**: UI utilities
-
-### Code Quality
-- Comprehensive documentation
-- Consistent naming conventions
-- Reusable component architecture
-- Error handling and validation
-- Linting and formatting
+- **sqflite** (+ `sqflite_common_ffi`): local database
+- **provider**: state management
+- **shared_preferences**: settings
+- **fl_chart**: bar and donut charts
+- **file_picker**: file selection for import / export
+- **lucide_icons_flutter**: category and UI icons
 
 ### Testing
 ```bash
+dart analyze lib test
 flutter test
+# Save PNGs of every screen (mockup sample data, 10 Nov 2026):
+SCREENSHOT_DIR=/some/folder flutter test test/screens_test.dart
 ```
-
-### Contributing
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License.

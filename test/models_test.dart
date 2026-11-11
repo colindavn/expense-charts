@@ -1,86 +1,73 @@
-// Test for the 'models' folder.
-// Each model is a class meant to represent an object (ex: Expense).
-
-import 'package:expenses_charts/models/expense_group.dart';
+import 'package:expenses_charts/models/currency.dart';
 import 'package:expenses_charts/models/expenses.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+int noon(int y, int m, int d) => DateTime(y, m, d, 12).millisecondsSinceEpoch;
+
 void main() {
-  test("Expense creation", () {
-    // Create expense
-    Expense expense = const Expense(
-      millisSinceEpochStart: 0, 
-      millisSinceEpochEnd: 100, 
-      type: "income", 
-      category: "regular",
-      label: "Salary", 
-      value: 2500
+  test('Expense maps to and from a database row', () {
+    final e = Expense(
+      id: 3,
+      millisSinceEpochStart: noon(2026, 11, 7),
+      millisSinceEpochEnd: noon(2026, 11, 9),
+      type: 'expense',
+      category: 'trip',
+      label: 'Hotel — Lyon',
+      value: 210,
+      currency: 'JPY',
+      originalValue: 34440,
     );
-    // Assert correctly created
-    expect(expense.millisSinceEpochStart, 0);
-    expect(expense.millisSinceEpochEnd, 100);
-    expect(expense.type, "income");
-    expect(expense.category, "regular");
-    expect(expense.label, "Salary");
-    expect(expense.value, 2500);
+    final map = e.toMap();
+    expect(map.containsKey('id'), isFalse);
+    expect(map['currency'], 'JPY');
+    final back = Expense.fromMap({...map, 'id': 3});
+    expect(back.id, 3);
+    expect(back.label, 'Hotel — Lyon');
+    expect(back.value, 210);
+    expect(back.originalValue, 34440);
   });
 
-  test("Expense mapping", () {
-    // Create expense
-    Expense expense = const Expense(
-      millisSinceEpochStart: 0, 
-      millisSinceEpochEnd: 100, 
-      type: "income", 
-      category: "regular",
-      label: "Salary", 
-      value: 2500
-    );
-    // Assert mapping is correct
-    expect(expense.toMap(), {
-      'millisSinceEpochStart': 0,
-      'millisSinceEpochEnd': 100,
-      'type': "income",
-      'category': "regular",
-      'label': "Salary",
-      'value': 2500,
+  test('fromMap accepts strings and a missing end date', () {
+    final e = Expense.fromMap({
+      'millisSinceEpochStart': '${noon(2026, 11, 7)}',
+      'type': 'income',
+      'category': 'income',
+      'label': 'Salary',
+      'value': '2450,5',
     });
+    expect(e.millisSinceEpochEnd, e.millisSinceEpochStart);
+    expect(e.value, 2450.5);
+    expect(e.currency, isNull);
   });
 
-  test("Expense to string", () {
-    // Create expense
-    Expense expense = const Expense(
-      millisSinceEpochStart: 0, 
-      millisSinceEpochEnd: 100, 
-      type: "income", 
-      category: "regular",
-      label: "Salary", 
-      value: 2500
+  test('Period entries count calendar days', () {
+    final e = Expense(
+      millisSinceEpochStart: noon(2026, 11, 7),
+      millisSinceEpochEnd: noon(2026, 11, 9),
+      type: 'expense',
+      category: 'trip',
+      label: 'Hotel',
+      value: 210,
     );
-    // Assert toString method
-    expect(expense.toString(), 'Expense{id: null, millisSinceEpoch: 0 - 100, type: income, category: regular, label: Salary value: 2500.0}');
+    expect(e.days, 3);
+    expect(e.isPeriod, isTrue);
+    expect(e.perDay, 70);
   });
 
-  test("ExpenseGroup creation", () {
-    // Create expenseGroup
-    ExpenseGroup expenseGroup = const ExpenseGroup(
-      groupAggregate: "2024-04-21", 
-      category: "grocery", 
-      aggregatedValue: 250.0
+  test('Period across a daylight-saving change still counts whole days', () {
+    final e = Expense(
+      millisSinceEpochStart: noon(2026, 10, 24),
+      millisSinceEpochEnd: noon(2026, 10, 26),
+      type: 'expense',
+      category: 'trip',
+      label: 'Weekend',
+      value: 90,
     );
-    // Assert correctly created
-    expect(expenseGroup.groupAggregate, "2024-04-21");
-    expect(expenseGroup.category, "grocery");
-    expect(expenseGroup.aggregatedValue, 250.0);
+    expect(e.days, 3);
   });
 
-  test("ExpenseGroup to String", () {
-    // Create expenseGroup
-    ExpenseGroup expenseGroup = const ExpenseGroup(
-      groupAggregate: "2024-04-21", 
-      category: "grocery", 
-      aggregatedValue: 250.0
-    );
-    // Assert toString method
-    expect(expenseGroup.toString(), "ExpenseGroup{groupAggregate: 2024-04-21, category: grocery, value: 250.0}");
+  test('Default currencies keep the old EUR/JPY behaviour', () {
+    expect(Currency.defaults.map((c) => c.code), ['EUR', 'JPY']);
+    expect(Currency.defaults.last.rate, 164);
   });
 }

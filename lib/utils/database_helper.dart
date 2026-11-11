@@ -1,473 +1,206 @@
 import 'dart:io';
 
+import 'package:expenses_charts/models/currency.dart';
 import 'package:expenses_charts/models/expenses.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
-
+/// Single access point to the SQLite file.
 class DatabaseHelper {
-  /// Utils class dedicated to database operations
-  static DatabaseHelper? _databaseHelper;
+  static DatabaseHelper? _instance;
   static Database? _database;
 
-  Database? get database => _database;
+  /// Tests can point this at `inMemoryDatabasePath` before first use.
+  static String? pathOverride;
 
-  factory DatabaseHelper(){
-    /**
-     * DatabaseHelper factory.
-     * Ensures object unicity.
-     */
-    if (_databaseHelper == null) {
-      _databaseHelper = DatabaseHelper._internal();
-      return _databaseHelper!;
-    } else {
-      return _databaseHelper!;
-    }
-  }
+  static const int version = 3;
+  static const String fileName = 'expense_database.db';
 
+  factory DatabaseHelper() => _instance ??= DatabaseHelper._internal();
   DatabaseHelper._internal();
 
   Future<Database> _getDatabase() async {
-    /**
-     * Main database getter.
-     */
-    _database ??= await _initializeDatabase();
+    _database ??= await _open();
     return _database!;
   }
 
-  Future<int> deleteTable() async {
-    /**
-     * To delete table
-     */
-    final db = await _getDatabase();
-    return await db.rawDelete('DELETE FROM expenses');
+  /// Closes the connection (used before replacing the file, and by tests).
+  static Future<void> close() async {
+    await _database?.close();
+    _database = null;
   }
 
-  Future<void> deleteDatabase() async {
-    /**
-     * To delete database.
-     */
-    databaseFactory.deleteDatabase(join(await getDatabasesPath(), 'expense_database.db'));
-  }
-
-  Future _initializeDatabase() async {
-    /**
-     * If needed, creates the database.
-     */
-    final Directory documentsDirectory;
+  static Future<String> databasePath() async {
+    if (pathOverride != null) return pathOverride!;
+    final Directory dir;
     if (Platform.isLinux) {
-      documentsDirectory = File(Platform.script.toFilePath()).parent;
+      dir = File(Platform.script.toFilePath()).parent;
     } else {
-      documentsDirectory = await getApplicationDocumentsDirectory();
+      dir = await getApplicationDocumentsDirectory();
     }
-    final databasePath = join(documentsDirectory.path, 'expense_database.db');
+    return join(dir.path, fileName);
+  }
 
-    return await openDatabase(
-      databasePath,
-      onCreate: (db, version) {
-        return db.execute('''
+  Future<Database> _open() async {
+    return openDatabase(
+      await databasePath(),
+      version: version,
+      onCreate: (db, v) async {
+        await db.execute('''
           CREATE TABLE expenses(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            millisSinceEpochStart INTEGER, 
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            millisSinceEpochStart INTEGER,
             millisSinceEpochEnd INTEGER,
-            type TEXT, 
-            category TEXT, 
-            label TEXT, 
-            value REAL
+            type TEXT,
+            category TEXT,
+            label TEXT,
+            value REAL,
+            currency TEXT,
+            originalValue REAL
           )
         ''');
+        await _createCurrencies(db);
       },
-      version: 2,
-      onUpgrade: _upgradeDatabase
+      onUpgrade: upgrade,
     );
+  }
+
+  static Future<void> _createCurrencies(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS currencies(
+        code TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        rate REAL NOT NULL
+      )
+    ''');
+    for (final c in Currency.defaults) {
+      await db.insert('currencies', c.toMap(), conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  /// v1 → v2: rename the date column and add an end date.
+  /// v2 → v3: currencies table, per-entry currency and original amount.
+  static Future<void> upgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('ALTER TABLE expenses RENAME COLUMN millisSinceEpoch TO millisSinceEpochStart');
+      await db.execute('ALTER TABLE expenses ADD COLUMN millisSinceEpochEnd INTEGER');
+      await db.execute('UPDATE expenses SET millisSinceEpochEnd = millisSinceEpochStart');
+    }
+    if (oldVersion < 3) {
+      await db.execute('ALTER TABLE expenses ADD COLUMN currency TEXT');
+      await db.execute('ALTER TABLE expenses ADD COLUMN originalValue REAL');
+      await _createCurrencies(db);
+    }
+  }
+
+  // ---------- Entries ----------
+
+  /// Every expense and income. Legacy "share" rows are ignored.
+  Future<List<Expense>> entries() async {
+    final db = await _getDatabase();
+    final maps = await db.query(
+      'expenses',
+      where: "type IN ('expense', 'income')",
+      orderBy: 'millisSinceEpochStart DESC, id DESC',
+    );
+    return maps.map(Expense.fromMap).toList();
   }
 
   Future<int> insertExpense(Expense expense) async {
-    /**
-     * Inserts/Replaces an expense into the table.
-     */
     final db = await _getDatabase();
-    return await db.insert(
-      'expenses',
-      expense.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    return db.insert('expenses', expense.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<void> updateExpense(int expenseId, Expense newExpense) async {
-    /**
-     * Updates an expense based on expenseId.
-     */
+  Future<void> updateExpense(int id, Expense expense) async {
     final db = await _getDatabase();
-    await db.update(
-      'expenses', 
-      newExpense.toMap(),
-      where: 'id = ?',
-      whereArgs: [expenseId]
-    );
+    await db.update('expenses', expense.toMap(), where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<void> deleteExpense(
-    int millisSinceEpochStart, 
-    int millisSinceEpochEnd, 
-    String type, 
-    String category, 
-    String label, 
-    double value
-  ) async {
-    /**
-     * Deletes an expense based on its variables.
-     * Can multiple delete if multiple exact same rows.
-     */
+  Future<void> deleteExpenseById(int id) async {
     final db = await _getDatabase();
-    await db.delete(
-      'expenses',
-      where: 'millisSinceEpochStart = ? AND millisSinceEpochEnd = ? AND type = ? AND category = ? AND label = ? AND value = ?',
-      whereArgs: [millisSinceEpochStart, millisSinceEpochEnd, type, category, label, value],
-    );
+    await db.delete('expenses', where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<List<Expense>> expenses() async {
-    /**
-     * Query every expenses.
-     */
+  /// Converts every stored value when the preferred currency changes from
+  /// [oldCode]. Entries without a currency were in [oldCode]: that is recorded
+  /// first so the typed amount is not lost.
+  Future<void> rebaseValues(String oldCode, double factor) async {
     final db = await _getDatabase();
-    final List<Map<String, dynamic>> maps = await db.query('expenses');
-    return List.generate(maps.length, (i) {
-      return Expense(
-        id: maps[i]['id'] as int, 
-        millisSinceEpochStart: maps[i]['millisSinceEpochStart'] as int, 
-        millisSinceEpochEnd: maps[i]['millisSinceEpochEnd'] as int, 
-        type: maps[i]['type'] as String, 
-        category: maps[i]['category'] as String,
-        label: maps[i]['label'] as String,
-        value: maps[i]['value'] as double,
+    await db.transaction((txn) async {
+      await txn.rawUpdate(
+        'UPDATE expenses SET currency = ?, originalValue = value WHERE currency IS NULL',
+        [oldCode],
       );
+      await txn.rawUpdate('UPDATE expenses SET value = ROUND(value * ?, 2)', [factor]);
     });
-  }
-
-  Future<Expense> getExpenseById(int expenseId) async {
-    /**
-     * Gets expense based on expenseId.
-     */
-    final db = await _getDatabase();
-    final List<Map<String, dynamic>> maps = await db.query(
-      'expenses', 
-      where: 'id = ?',
-      whereArgs: [expenseId]
-    );
-    if (maps.isNotEmpty) {
-      return List.generate(maps.length, (i) {
-        return Expense(
-          id: maps[i]['id'] as int, 
-          millisSinceEpochStart: maps[i]['millisSinceEpochStart'] as int, 
-          millisSinceEpochEnd: maps[i]['millisSinceEpochEnd'] as int, 
-          type: maps[i]['type'] as String, 
-          category: maps[i]['category'] as String,
-          label: maps[i]['label'] as String,
-          value: maps[i]['value'] as double,
-        );
-      })[0];
-    } else {
-      throw Exception("Error: no id found for this query");
-    }
-  }
-
-  Future<List<Expense>> getExpensesWithDates(DateTime startDate, DateTime endDate) async {
-    /**
-     * Query every expenses with date range.
-     */
-    final db = await _getDatabase();
-    // Reformat dates
-    String formattedStartDate = startDate.toIso8601String();
-    String formattedEndDate = endDate.toIso8601String();
-    final List<Map<String, dynamic>> maps = await db.query(
-      'expenses',
-      where: "datetime(millisSinceEpochStart / 1000, 'unixepoch') >= date(?) AND datetime(millisSinceEpochStart / 1000, 'unixepoch') < date(?, '+1 day')",
-      whereArgs: [formattedStartDate, formattedEndDate]
-    );
-    return List.generate(maps.length, (i) {
-      return Expense(
-        id: maps[i]['id'] as int, 
-        millisSinceEpochStart: maps[i]['millisSinceEpochStart'] as int, 
-        millisSinceEpochEnd: maps[i]['millisSinceEpochEnd'] as int, 
-        type: maps[i]['type'] as String, 
-        category: maps[i]['category'] as String,
-        label: maps[i]['label'] as String,
-        value: maps[i]['value'] as double,
-      );
-    });
-  }
-
-  Future<List<Expense>> getLatestExpenses(int n, String category, String label) async {
-    /**
-     * Fetchs n latest expenses.
-     * If provided, filters by category and / or label
-     */
-    final db = await _getDatabase();
-    final List<Map<String, dynamic>> maps;
-    String whereClause = category != 'all' ? "category = ? AND label LIKE ?" : "label LIKE ?";
-    List<dynamic> whereArgs = category != 'all' ? [category, '%${label.toLowerCase()}%'] : ['%${label.toLowerCase()}%'];
-    maps = await db.query(
-      'expenses',
-      where: whereClause,
-      whereArgs: whereArgs,
-      orderBy: "millisSinceEpochStart DESC",
-      limit: n,
-    );
-    return List.generate(maps.length, (i) {
-      return Expense(
-        id: maps[i]['id'] as int, 
-        millisSinceEpochStart: maps[i]['millisSinceEpochStart'] as int, 
-        millisSinceEpochEnd: maps[i]['millisSinceEpochEnd'] as int, 
-        type: maps[i]['type'] as String, 
-        category: maps[i]['category'] as String,
-        label: maps[i]['label'] as String,
-        value: maps[i]['value'] as double,
-      );
-    });
-  }
-
-  Future<List<Map<String, dynamic>>> getExpenseOverPeriod(String entryType, DateTime startDate, DateTime endDate) async {
-    /**
-     * Gets every expense based on entryType over a specific period.
-     */
-    final db = await _getDatabase();
-    // Reformat dates
-    String formattedStartDate = startDate.toIso8601String();
-    String formattedEndDate = endDate.toIso8601String();
-    // Query data over a specific period
-    List<Map<String, dynamic>> maps = await db.rawQuery(
-      '''
-      SELECT
-        datetime(millisSinceEpochStart / 1000, 'unixepoch') AS startDate,
-        datetime(millisSinceEpochEnd / 1000, 'unixepoch') AS endDate,
-        category,
-        label,
-        value
-      FROM 
-        expenses
-      WHERE
-        (
-          (
-            datetime(millisSinceEpochStart / 1000, 'unixepoch') >= date(?)
-            AND
-            datetime(millisSinceEpochStart / 1000, 'unixepoch') < date(?, '+1 day')
-          )
-          OR
-          (
-            datetime(millisSinceEpochEnd / 1000, 'unixepoch') >= date(?)
-            AND
-            datetime(millisSinceEpochEnd / 1000, 'unixepoch') < date(?, '+1 day')
-          )
-          OR
-          (
-            datetime(millisSinceEpochStart / 1000, 'unixepoch') <= date(?)
-            AND
-            datetime(millisSinceEpochEnd / 1000, 'unixepoch') >= date(?, '+1 day')
-          )
-        )
-        AND
-        type = ?
-      ''',
-      [formattedStartDate, formattedEndDate, formattedStartDate, formattedEndDate, formattedStartDate, formattedEndDate, entryType],
-    );
-    return maps;
-  }
-
-  Future<int> getIdFromValues(
-    int millisSinceEpochStart, 
-    int millisSinceEpochEnd, 
-    String type, 
-    String category, 
-    String label, 
-    double value
-  ) async {
-    /**
-     * Retrieves ID from other values.
-     * Assumes one expense can be fully defined its variables. Bold assumption, can fail.
-     */
-    final db = await _getDatabase();
-    // Query expenses table to find it.
-    List<Map<String, dynamic>> maps = await db.query(
-      'expenses',
-      columns: ['id'],
-      where: 'millisSinceEpochStart = ? AND millisSinceEpochEnd = ? AND type = ? AND category = ? AND label = ? AND value = ?',
-      whereArgs: [millisSinceEpochStart, millisSinceEpochEnd, type, category, label, value]
-    );
-    // Fails if more than one result.
-    if (maps.length == 1) {
-      return maps[0]['id'] as int;
-    } else if (maps.length > 1) {
-      throw Exception("Error : multiple ids for this query");
-    } else {
-      throw Exception("Error: no id found for this query");
-    }
   }
 
   Future<bool> existsInExistingDatabase(Map<String, dynamic> row) async {
-    /**
-     * Checks if row already exists in database.
-     * Must have the exact same values.
-    debugPrint(startDate.toString());
-    debugPrint(formattedStartDate.toString());
-     */
-    
-    var millisSinceEpochEnd = row['millisSinceEpochEnd'] ?? row['millisSinceEpochStart'];
+    final e = Expense.fromMap(row);
     final db = await _getDatabase();
-    int? count = Sqflite.firstIntValue(await db.rawQuery(
+    final count = Sqflite.firstIntValue(await db.rawQuery(
       '''
-      SELECT 
-        COUNT(*) 
-      FROM 
-        expenses 
-      WHERE 
-        millisSinceEpochStart = ?
-        AND millisSinceEpochEnd = ?
-        AND type = ?
-        AND category = ?
-        AND label = ?
-        AND value = ?
+      SELECT COUNT(*) FROM expenses
+      WHERE millisSinceEpochStart = ? AND millisSinceEpochEnd = ?
+        AND type = ? AND category = ? AND label = ? AND value = ?
       ''',
-      [
-        row['millisSinceEpochStart'] is String ? int.parse(row['millisSinceEpochStart']): row['millisSinceEpochStart'],
-        millisSinceEpochEnd is String ? int.parse(millisSinceEpochEnd): millisSinceEpochEnd,
-        row['type'],
-        row['category'],
-        row['label'],
-        row['value'] is String ? double.parse(row['value']): row['value']
-      ],
+      [e.millisSinceEpochStart, e.millisSinceEpochEnd, e.type, e.category, e.label, e.value],
     ));
-    return count! > 0;
+    return (count ?? 0) > 0;
   }
 
-  Future<double> getRemainingBudget() async {
-    /**
-     * Calculates remaining budget as: sum of all incomes - sum of all expenses
-     */
-    final db = await _getDatabase();
-    // Get sum of all incomes
-    List<Map<String, dynamic>> incomeResult = await db.rawQuery(
-      '''
-      SELECT 
-        COALESCE(SUM(value), 0) as total 
-      FROM 
-        expenses 
-      WHERE 
-        type = 'income'
-      '''
-    );
-    double totalIncome = incomeResult.isNotEmpty && incomeResult[0]['total'] != null
-        ? (incomeResult[0]['total'] as num).toDouble()
-        : 0.0;
-    
-    // Get sum of all expenses
-    List<Map<String, dynamic>> expenseResult = await db.rawQuery(
-      '''
-      SELECT 
-        COALESCE(SUM(value), 0) as total 
-      FROM 
-        expenses 
-      WHERE 
-        type = 'expense'
-      '''
-    );
-    double totalExpense = expenseResult.isNotEmpty && expenseResult[0]['total'] != null
-        ? (expenseResult[0]['total'] as num).toDouble()
-        : 0.0;
-    
-    return totalIncome - totalExpense;
-  }
-
-  Future<double> getTotalShares() async {
-    /**
-     * Calculates total shares value: sum of all shares
-     */
-    final db = await _getDatabase();
-    List<Map<String, dynamic>> shareResult = await db.rawQuery(
-      '''
-      SELECT 
-        COALESCE(SUM(value), 0) as total 
-      FROM 
-        expenses 
-      WHERE 
-        type = 'share'
-      '''
-    );
-    double totalShares = shareResult.isNotEmpty && shareResult[0]['total'] != null
-        ? (shareResult[0]['total'] as num).toDouble()
-        : 0.0;
-    
-    return totalShares;
-  }
-
-  Future<double> getTotalIncomes() async {
-    /**
-     * Calculates total incomes: sum of all incomes
-     */
-    final db = await _getDatabase();
-    List<Map<String, dynamic>> incomeResult = await db.rawQuery(
-      '''
-      SELECT 
-        COALESCE(SUM(value), 0) as total 
-      FROM 
-        expenses 
-      WHERE 
-        type = 'income'
-      '''
-    );
-    double totalIncome = incomeResult.isNotEmpty && incomeResult[0]['total'] != null
-        ? (incomeResult[0]['total'] as num).toDouble()
-        : 0.0;
-    
-    return totalIncome;
-  }
-
-  Future<double> getTotalExpenses() async {
-    /**
-     * Calculates total expenses: sum of all expenses
-     */
-    final db = await _getDatabase();
-    List<Map<String, dynamic>> expenseResult = await db.rawQuery(
-      '''
-      SELECT 
-        COALESCE(SUM(value), 0) as total 
-      FROM 
-        expenses 
-      WHERE 
-        type = 'expense'
-      '''
-    );
-    double totalExpense = expenseResult.isNotEmpty && expenseResult[0]['total'] != null
-        ? (expenseResult[0]['total'] as num).toDouble()
-        : 0.0;
-    
-    return totalExpense;
-  }
-
-  Future<void> _upgradeDatabase(Database db, int oldVersion, int newVersion) async {
-    /**
-     * Script to upgrade database.
-     * Version 1 --> 2 : column renaming and adding millisSinceEpochEnd
-     */
-    if (oldVersion < 2) {
-      db.execute('ALTER TABLE expenses RENAME COLUMN millisSinceEpoch TO millisSinceEpochStart');
-      db.execute('ALTER TABLE expenses ADD millisSinceEpochEnd INTEGER');
-      final List<Map<String, dynamic>> rows = await db.query('expenses');
-      for (final row in rows) {
-        final expense = Expense(
-          id: row['id'],
-          millisSinceEpochStart: row['millisSinceEpochStart'],
-          millisSinceEpochEnd: row['millisSinceEpochStart'],
-          type: row['type'],
-          category: row['category'],
-          label: row['label'],
-          value: row['value'],
-        );
-
-        await db.insert('expenses', expense.toMap());
-      }
+  /// Inserts the rows not already present. Returns how many were added.
+  Future<int> mergeEntries(List<Expense> rows) async {
+    var added = 0;
+    for (final row in rows) {
+      if (row.type != 'expense' && row.type != 'income') continue;
+      if (await existsInExistingDatabase(row.toMap())) continue;
+      await insertExpense(Expense.fromMap({...row.toMap(), 'id': null}));
+      added++;
     }
+    return added;
+  }
+
+  /// Deletes every entry and inserts [rows] instead.
+  Future<int> replaceEntries(List<Expense> rows) async {
+    final db = await _getDatabase();
+    var added = 0;
+    await db.transaction((txn) async {
+      await txn.delete('expenses');
+      for (final row in rows) {
+        if (row.type != 'expense' && row.type != 'income') continue;
+        final map = row.toMap();
+        await txn.insert('expenses', map);
+        added++;
+      }
+    });
+    return added;
+  }
+
+  // ---------- Currencies ----------
+
+  Future<List<Currency>> currencies() async {
+    final db = await _getDatabase();
+    final maps = await db.query('currencies', orderBy: 'code');
+    return maps.map(Currency.fromMap).toList();
+  }
+
+  Future<void> upsertCurrency(Currency c) async {
+    final db = await _getDatabase();
+    await db.insert('currencies', c.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deleteCurrency(String code) async {
+    final db = await _getDatabase();
+    await db.delete('currencies', where: 'code = ?', whereArgs: [code]);
+  }
+
+  Future<bool> currencyInUse(String code) async {
+    final db = await _getDatabase();
+    final count = Sqflite.firstIntValue(
+      await db.rawQuery('SELECT COUNT(*) FROM expenses WHERE currency = ?', [code]),
+    );
+    return (count ?? 0) > 0;
   }
 }
